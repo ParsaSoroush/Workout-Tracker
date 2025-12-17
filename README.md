@@ -2,7 +2,7 @@
 
 A simple RESTful API that allows users to Add Workouts, manage them, Track and get report of it, and make Workout-Exercises.
 
-🔗 **Project page:** https://roadmap.sh/projects/url-shortening-service  
+🔗 **Project page:** https://roadmap.sh/projects/fitness-workout-tracker
 
 
 ---
