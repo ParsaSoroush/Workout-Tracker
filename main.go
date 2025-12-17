@@ -15,7 +15,11 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
+
 )
+
+import gts "github.com/azrod/go-timesort"
+
 
 var db *gorm.DB
 var JwtSecretKey = []byte("SECRET_KEY")
@@ -42,6 +46,7 @@ type Workout struct {
 	ID           uint              `gorm:"primaryKey" json:"id"`
 	Title        string            `gorm:"not null" json:"title"`
 	Description  string            `json:"description"`
+	Status       string            `json:"status" binding:"required,oneof='pending' 'active' defualt:"pending"`	
 	Comments     string            `json:"comments"`
 	ScheduledFor time.Time         `gorm:"not null" json:"scheduled_for"`
 	CreatedAt    time.Time         `json:"created_at"`
@@ -60,6 +65,18 @@ type WorkoutExercise struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type GenerateReportResponse struct {
+    Sets          int       `json:"sets"`
+    Repetitions   int       `json:"repetitions"`
+    Weight        float64   `json:"weight"`
+    Category      string    `json:"category"`
+    MuscleGroup   string    `json:"muscle_group"`
+    Status        string    `json:"status"`
+    ScheduledFor  time.Time `json:"scheduled_for"`
+	Workout
+	Exercise
+	WorkoutExercise
+}
 
 
 func connectDB() {
@@ -369,9 +386,12 @@ func AddWorkout(c *gin.Context) {
 		return
 	}
 
+	status := "pending"
+
 	workout := Workout{
 		Title:        input.Title,
 		Description:  input.Description,
+		Status:       status,
 		Comments:     input.Comments,
 		ScheduledFor: scheduledTime,
 		UserID:       userID,
@@ -412,6 +432,7 @@ func GetAllWorkouts(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+
 	userID, err := userIDFromClaims(claims)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -419,15 +440,28 @@ func GetAllWorkouts(c *gin.Context) {
 	}
 
 	var workouts []Workout
-	if err := db.Preload("Exercises.Exercise").
+	if err := db.
 		Where("user_id = ?", userID).
-		Order("scheduled_for ASC").
+		Preload("Exercises.Exercise").
+		Where("status IN ?", []string{"active", "pending"}).
 		Find(&workouts).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch workouts"})
 		return
 	}
-	c.JSON(http.StatusOK, workouts)
+
+
+	sorter := gts.New(
+		workouts,
+		func(w Workout) time.Time {
+			return w.CreatedAt
+		},
+	)
+
+	sorter.SortAsc()
+
+	c.JSON(http.StatusOK, sorter.Items())
 }
+
 
 func UpdateWorkout(c *gin.Context) {
 	claims, err := getClaimsFromContext(c)
@@ -454,6 +488,7 @@ func UpdateWorkout(c *gin.Context) {
 		Description  string `json:"description"`
 		Comments     string `json:"comments"`
 		ScheduledFor string `json:"scheduled_for"`
+		Status       string `json:"status"`
 	}
 
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -478,7 +513,18 @@ func UpdateWorkout(c *gin.Context) {
 		}
 		workout.ScheduledFor = t
 	}
-
+	if input.Status != "" {
+		switch input.Status {
+		case "pending", "active":
+			workout.Status = input.Status
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "invalid status value",
+			})
+			return
+		}
+	}
+	
 	if err := db.Save(&workout).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workout"})
 		return
@@ -518,7 +564,7 @@ func DeleteWorkout(c *gin.Context) {
 
 
 
-func AddExerciseToWorkout(c *gin.Context) {
+func  AddExerciseToWorkout(c *gin.Context) {
 	claims, err := getClaimsFromContext(c)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
@@ -711,6 +757,45 @@ func DeleteExerciseFromWorkout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "exercise removed from workout"})
 }
 
+func GenerateReport(c *gin.Context) {
+	 claims, err := getClaimsFromContext(c)
+	 if err != nil {
+		 c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		 return
+	 }
+ 
+	 userID, err := userIDFromClaims(claims)
+	 if err != nil {
+		 c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		 return
+	 }
+ 
+	 var report []GenerateReportResponse
+ 
+	 err = db.Table("workout_exercises").
+		 Select(`
+			 workout_exercises.sets,
+			 workout_exercises.repetitions,
+			 workout_exercises.weight,
+			 exercises.category,
+			 exercises.muscle_group,
+			 workouts.status,
+			 workouts.scheduled_for,
+		 `).
+		 Joins("JOIN exercises ON exercises.id = workout_exercises.exercise_id").
+		 Joins("JOIN workouts ON workouts.id = workout_exercises.workout_id").
+		 Where("workouts.user_id = ?", userID).
+		 Scan(&report).Error
+ 
+	 if err != nil {
+		 c.JSON(http.StatusInternalServerError, gin.H{
+			 "error": "failed to generate report",
+		 })
+		 return
+	 }
+ 
+	 c.JSON(http.StatusOK, report)
+}
 
 
 func main() {
@@ -738,13 +823,14 @@ func main() {
 	auth.PUT("/workouts/:workout_id/exercises/:exercise_id", UpdateWorkoutExercise)
 	auth.GET("/workouts/:workout_id/exercises", GetExercisesForWorkout)
 	auth.DELETE("/workouts/:workout_id/exercises/:exercise_id", DeleteExerciseFromWorkout)
+	auth.GET("/workouts/report", GenerateReport)
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-	log.Printf("Server running on :%s\n", port)
+	log.Printf("✅Server running on :%s🚀\n", port)
 	if err := r.Run(":" + port); err != nil {
-		log.Fatal("server failed:", err)
+		log.Fatal("❌server failed:", err)
 	}
 }
