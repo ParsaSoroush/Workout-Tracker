@@ -114,7 +114,7 @@
   "message": "Logout successful. Please delete token on client."
 }
 ```
-⬆️ **It means logout was successful, client should delete the token** ⬆️
+⬆️ **It means logout was successful, client will delete the token** ⬆️
 
 ---
 

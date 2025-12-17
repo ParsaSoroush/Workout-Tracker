@@ -356,9 +356,17 @@ func AddWorkout(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
+
 	userID, err := userIDFromClaims(claims)
-	if err != nil {
+	if err != nil || userID == 0 {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	// 🔴 CRITICAL: verify user exists (FK safety)
+	var user User
+	if err := db.First(&user, userID).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
 		return
 	}
 
@@ -386,28 +394,37 @@ func AddWorkout(c *gin.Context) {
 		return
 	}
 
-	status := "pending"
+	tx := db.Begin()
+	if tx.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start transaction"})
+		return
+	}
 
 	workout := Workout{
 		Title:        input.Title,
 		Description:  input.Description,
-		Status:       status,
+		Status:       "pending",
 		Comments:     input.Comments,
 		ScheduledFor: scheduledTime,
 		UserID:       userID,
 	}
 
-	if err := db.Create(&workout).Error; err != nil {
+	if err := tx.Create(&workout).Error; err != nil {
+		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create workout"})
 		return
 	}
 
 	for _, e := range input.Exercises {
-		if err := db.First(&Exercise{}, e.ExerciseID).Error; err != nil {
-			_ = db.Delete(&workout).Error
-			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("exercise id %d not found", e.ExerciseID)})
+		var exercise Exercise
+		if err := tx.First(&exercise, e.ExerciseID).Error; err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("exercise id %d not found", e.ExerciseID),
+			})
 			return
 		}
+
 		we := WorkoutExercise{
 			WorkoutID:   workout.ID,
 			ExerciseID:  e.ExerciseID,
@@ -415,16 +432,28 @@ func AddWorkout(c *gin.Context) {
 			Repetitions: e.Repetitions,
 			Weight:      e.Weight,
 		}
-		if err := db.Create(&we).Error; err != nil {
-			_ = db.Delete(&workout).Error
+
+		if err := tx.Create(&we).Error; err != nil {
+			tx.Rollback()
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to attach exercises"})
 			return
 		}
 	}
 
-	_ = db.Preload("Exercises.Exercise").First(&workout, workout.ID).Error
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to commit transaction"})
+		return
+	}
+
+	if err := db.Preload("Exercises.Exercise").
+		First(&workout, workout.ID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load workout"})
+		return
+	}
+
 	c.JSON(http.StatusCreated, workout)
 }
+
 
 func GetAllWorkouts(c *gin.Context) {
 	claims, err := getClaimsFromContext(c)
