@@ -787,43 +787,43 @@ func DeleteExerciseFromWorkout(c *gin.Context) {
 }
 
 func GenerateReport(c *gin.Context) {
-	 claims, err := getClaimsFromContext(c)
-	 if err != nil {
-		 c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		 return
-	 }
- 
-	 userID, err := userIDFromClaims(claims)
-	 if err != nil {
-		 c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		 return
-	 }
- 
-	 var report []GenerateReportResponse
- 
-	 err = db.Table("workout_exercises").
-		 Select(`
-			 workout_exercises.sets,
-			 workout_exercises.repetitions,
-			 workout_exercises.weight,
-			 exercises.category,
-			 exercises.muscle_group,
-			 workouts.status,
-			 workouts.scheduled_for,
-		 `).
-		 Joins("JOIN exercises ON exercises.id = workout_exercises.exercise_id").
-		 Joins("JOIN workouts ON workouts.id = workout_exercises.workout_id").
-		 Where("workouts.user_id = ?", userID).
-		 Scan(&report).Error
- 
-	 if err != nil {
-		 c.JSON(http.StatusInternalServerError, gin.H{
-			 "error": "failed to generate report",
-		 })
-		 return
-	 }
- 
-	 c.JSON(http.StatusOK, report)
+	claims, err := getClaimsFromContext(c)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	userID, err := userIDFromClaims(claims)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var report []GenerateReportResponse
+
+	err = db.Table("workout_exercises").
+		Select(`
+			workout_exercises.sets AS sets,
+			workout_exercises.repetitions AS repetitions,
+			workout_exercises.weight AS weight,
+			exercises.category AS category,
+			exercises.muscle_group AS muscle_group,
+			workouts.status AS status,
+			workouts.scheduled_for AS scheduled_for
+		`).
+		Joins("JOIN exercises ON exercises.id = workout_exercises.exercise_id").
+		Joins("JOIN workouts ON workouts.id = workout_exercises.workout_id").
+		Where("workouts.user_id = ?", userID).
+		Scan(&report).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to generate report",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, report)
 }
 
 
